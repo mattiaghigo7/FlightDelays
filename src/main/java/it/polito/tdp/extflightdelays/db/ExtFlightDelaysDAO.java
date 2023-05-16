@@ -7,10 +7,12 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 
 import it.polito.tdp.extflightdelays.model.Airline;
 import it.polito.tdp.extflightdelays.model.Airport;
 import it.polito.tdp.extflightdelays.model.Flight;
+import it.polito.tdp.extflightdelays.model.Rotta;
 
 public class ExtFlightDelaysDAO {
 
@@ -37,9 +39,9 @@ public class ExtFlightDelaysDAO {
 		}
 	}
 
-	public List<Airport> loadAllAirports() {
+	
+	public void loadAllAirports(Map<Integer, Airport> idMap) {
 		String sql = "SELECT * FROM airports";
-		List<Airport> result = new ArrayList<Airport>();
 
 		try {
 			Connection conn = ConnectDB.getConnection();
@@ -50,11 +52,10 @@ public class ExtFlightDelaysDAO {
 				Airport airport = new Airport(rs.getInt("ID"), rs.getString("IATA_CODE"), rs.getString("AIRPORT"),
 						rs.getString("CITY"), rs.getString("STATE"), rs.getString("COUNTRY"), rs.getDouble("LATITUDE"),
 						rs.getDouble("LONGITUDE"), rs.getDouble("TIMEZONE_OFFSET"));
-				result.add(airport);
+				idMap.put(rs.getInt("ID"), airport);
 			}
 
 			conn.close();
-			return result;
 
 		} catch (SQLException e) {
 			e.printStackTrace();
@@ -62,6 +63,8 @@ public class ExtFlightDelaysDAO {
 			throw new RuntimeException("Error Connection Database");
 		}
 	}
+	
+	
 
 	public List<Flight> loadAllFlights() {
 		String sql = "SELECT * FROM flights";
@@ -91,4 +94,130 @@ public class ExtFlightDelaysDAO {
 			throw new RuntimeException("Error Connection Database");
 		}
 	}
+	
+	
+	
+	/**
+	 * Metodo che legge dal dao tutti i vertici filtrati dal database
+	 * @param nAirlines
+	 * @param idMap
+	 * @return
+	 */
+	public List<Airport> getVertici(int nAirlines, Map<Integer, Airport> idMap){
+		//Questa é una possibile soluzione della query, usando una nested SELECT
+		String sql = "SELECT tmp.ID, tmp.IATA_CODE, COUNT(*) as N "
+				+ "FROM "
+				+ "(SELECT a.ID, a.IATA_CODE, f.AIRLINE_ID, COUNT(*) as n "
+				+ "FROM flights f, airports a "
+				+ "WHERE f.ORIGIN_AIRPORT_ID = a.ID OR f.DESTINATION_AIRPORT_ID = a.ID "
+				+ "GROUP BY a.ID, a.IATA_CODE, f.AIRLINE_ID) tmp "
+				+ "GROUP BY tmp.ID, tmp.IATA_CODE "
+				+ "HAVING N >= ?";
+		
+		// Questa e' una query alternativa, che chiama la count nella having ed usa una distinct
+		// per filtrare rispetto alle airlines
+//		String sql = "SELECT a.id "
+//				+ "FROM airports a, flights f "
+//				+ "WHERE (a.id = f.ORIGIN_AIRPORT_ID OR a.id = f.DESTINATION_AIRPORT_ID) "
+//				+ "GROUP BY a.id "
+//				+ "HAVING COUNT(DISTINCT (f.AIRLINE_ID)) >= ?";
+		
+		List<Airport> vertici = new ArrayList<Airport>();
+
+		try {
+			Connection conn = ConnectDB.getConnection();
+			PreparedStatement st = conn.prepareStatement(sql);
+			st.setInt(1, nAirlines);
+			ResultSet rs = st.executeQuery();
+
+			while (rs.next()) {
+				vertici.add(idMap.get(rs.getInt("ID")));
+			}
+
+			conn.close();
+			return vertici;	
+		} catch (SQLException e) {
+			e.printStackTrace();
+			System.out.println("Errore connessione al database");
+			throw new RuntimeException("Error Connection Database");
+		}
+	}
+	
+	
+	
+	/**
+	 * Metodo che legge dal dao le rotte SENZA AGGREGARE LE ROTTE OPPOSTE!
+	 * Quindi l'aggregazione va fatta poi nel codice quando si crea il grafo
+	 * @param idMap
+	 * @return
+	 */
+	public List<Rotta> getRotte(Map<Integer, Airport> idMap) {
+		String sql = "SELECT f.ORIGIN_AIRPORT_ID, f.DESTINATION_AIRPORT_ID, COUNT(*) as N "
+				+ "FROM flights f "
+				+ "GROUP BY f.ORIGIN_AIRPORT_ID, f.DESTINATION_AIRPORT_ID";
+		List<Rotta> rotte = new ArrayList<Rotta>();
+		
+		try {
+			Connection conn = ConnectDB.getConnection();
+			PreparedStatement st = conn.prepareStatement(sql);
+			ResultSet rs = st.executeQuery();
+
+			while (rs.next()) {
+				rotte.add(new Rotta(idMap.get(rs.getInt("ORIGIN_AIRPORT_ID")), 
+						idMap.get(rs.getInt("DESTINATION_AIRPORT_ID")) , rs.getInt("N"))  );
+			}
+
+			conn.close();
+			return rotte;
+		} catch (SQLException e) {
+			e.printStackTrace();
+			System.out.println("Errore connessione al database");
+			throw new RuntimeException("Error Connection Database");
+		}
+	}
+	
+	
+	
+	/**
+	 * Metodo che legge dal dao le rotte AGGREGANDO LE ROTTE OPPOSTE! Quindi poi nel metodo 
+	 * crea grafo non e' necessario sommare i pesi di rotte opposte. Però la query é molto più complicata....
+	 * @param idMap
+	 * @return
+	 */
+	public List<Rotta> getRotteAggregate(Map<Integer, Airport> idMap) {
+		String sql = "SELECT T1.ORIGIN_AIRPORT_ID, T1.DESTINATION_AIRPORT_ID, COALESCE(T1.N, 0) + COALESCE(T2.N, 0) as N_VOLI "
+				+ "FROM "
+				+ "(SELECT f.ORIGIN_AIRPORT_ID, f.DESTINATION_AIRPORT_ID, COUNT(*) as N "
+				+ "FROM flights f "
+				+ "GROUP BY f.ORIGIN_AIRPORT_ID, f.DESTINATION_AIRPORT_ID) T1 "
+				+ "LEFT JOIN "
+				+ "(SELECT f.ORIGIN_AIRPORT_ID, f.DESTINATION_AIRPORT_ID, COUNT(*) as N "
+				+ "FROM flights f "
+				+ "GROUP BY f.ORIGIN_AIRPORT_ID, f.DESTINATION_AIRPORT_ID) T2 "
+				+ "ON T1.ORIGIN_AIRPORT_ID = T2.DESTINATION_AIRPORT_ID AND T2.ORIGIN_AIRPORT_ID = T1.DESTINATION_AIRPORT_ID "
+				+ "WHERE T1.ORIGIN_AIRPORT_ID < T2.ORIGIN_AIRPORT_ID OR T2.ORIGIN_AIRPORT_ID IS NULL OR T2.DESTINATION_AIRPORT_ID IS NULL";
+		List<Rotta> rotte = new ArrayList<Rotta>();
+		
+		try {
+			Connection conn = ConnectDB.getConnection();
+			PreparedStatement st = conn.prepareStatement(sql);
+			ResultSet rs = st.executeQuery();
+
+			while (rs.next()) {
+				rotte.add(new Rotta(idMap.get(rs.getInt("ORIGIN_AIRPORT_ID")), 
+						idMap.get(rs.getInt("DESTINATION_AIRPORT_ID")) , rs.getInt("N_VOLI"))  );
+			}
+
+			conn.close();
+			return rotte;
+		} catch (SQLException e) {
+			e.printStackTrace();
+			System.out.println("Errore connessione al database");
+			throw new RuntimeException("Error Connection Database");
+		}
+	}
+	
+	
+	
+	
 }
