@@ -52,6 +52,7 @@ public class FXMLController {
     	}
     	catch(NumberFormatException e) {
     		this.txtResult.setText("inserire un numero");
+    		return;
     	}
     	
     	//creazione del grafo
